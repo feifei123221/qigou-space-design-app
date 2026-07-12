@@ -17,6 +17,7 @@ let busy = false;
 let strategyLocalizationInFlight = false;
 let persistTimer = null;
 let localStorageWarningShown = false;
+let generationTimer = null;
 
 
 function loadState() {
@@ -113,7 +114,26 @@ function renderComposer() {
   elements.sendButton.disabled = busy;
 }
 
+
 function resultImage(result) { return result?.dataUrl || result?.url || ""; }
+function generationProgress() {
+  const elapsed = Math.max(0, Math.floor((Date.now() - Number(state.generationStartedAt || Date.now())) / 1000));
+  const stage = elapsed < 20 ? "正在分析空间与参考图" : elapsed < 60 ? "正在绘制空间、灯光与材质" : "正在完善细节与画面质感";
+  return { elapsed, stage };
+}
+function updateGenerationProgress() {
+  if (state.status !== "generating") return;
+  const { elapsed, stage } = generationProgress();
+  elements.generationState.textContent = `正在生成 · ${elapsed} 秒`;
+  document.querySelectorAll("[data-generation-elapsed]").forEach((element) => { element.textContent = `已等待 ${elapsed} 秒，请不要关闭页面`; });
+  document.querySelectorAll("[data-generation-stage]").forEach((element) => { element.textContent = stage; });
+}
+function startGenerationTimer() {
+  clearInterval(generationTimer);
+  updateGenerationProgress();
+  generationTimer = setInterval(updateGenerationProgress, 1000);
+}
+function stopGenerationTimer() { clearInterval(generationTimer); generationTimer = null; }
 function renderStrategy() {
   if (strategyNeedsLocalization(state.strategy)) {
     elements.emptyStrategy.hidden = false; elements.strategyContent.hidden = true; elements.strategyContent.innerHTML = "";
@@ -133,10 +153,15 @@ function renderStrategy() {
 }
 
 function renderResults() {
-  elements.generationState.textContent = state.status === "generating" ? "生成中，请耐心等待" : state.status === "error" ? state.generationError : state.results.length ? `版本 ${state.activeResultIndex + 1} / ${state.results.length}` : "等待生成";
+  if (state.status !== "generating") stopGenerationTimer();
+  elements.generationState.classList.toggle("active", state.status === "generating");
+  elements.generationState.setAttribute("aria-live", "polite");
+  elements.generationState.textContent = state.status === "generating" ? "正在生成 · 0 秒" : state.status === "error" ? state.generationError : state.results.length ? `版本 ${state.activeResultIndex + 1} / ${state.results.length}` : "等待生成";
   elements.downloadImageButton.hidden = !state.results.length;
+  const generatingCard = '<div class="generating-card" role="status" aria-live="polite"><i aria-hidden="true"></i><h3>AI 正在生成设计效果图</h3><p data-generation-stage>正在分析空间与参考图</p><strong data-generation-elapsed>已等待 0 秒，请不要关闭页面</strong><small>高质量效果图通常需要 1–3 分钟，完成后会自动显示。</small></div>';
   if (state.status === "generating" && !state.results.length) {
-    elements.resultGrid.innerHTML = '<div class="generating-card"><i></i><p>正在生成设计效果图</p></div>';
+    elements.resultGrid.innerHTML = generatingCard;
+    startGenerationTimer();
     return;
   }
   if (state.status === "error" && !state.results.length) {
@@ -147,7 +172,8 @@ function renderResults() {
     elements.resultGrid.innerHTML = '<div class="visual-empty"><div class="line-art">⌂</div><h3>效果图将在这里呈现</h3><p>完成需求讨论并确认方案后，无需离开对话区即可查看结果。</p></div>';
     return;
   }
-  elements.resultGrid.innerHTML = state.results.map((result, index) => `<figure class="result-card ${index === state.activeResultIndex ? "active" : ""}"><img src="${resultImage(result)}" alt="设计效果图版本 ${index + 1}"><figcaption><span>版本 ${index + 1}</span><span><button class="secondary" data-version="${index}">查看</button> <button class="secondary" data-optimize="${index}">基于此图优化</button></span></figcaption></figure>`).join("");
+  elements.resultGrid.innerHTML = `${state.status === "generating" ? generatingCard : ""}${state.results.map((result, index) => `<figure class="result-card ${index === state.activeResultIndex ? "active" : ""}"><img src="${resultImage(result)}" alt="设计效果图版本 ${index + 1}"><figcaption><span>版本 ${index + 1}</span><span><button class="secondary" data-version="${index}">查看</button> <button class="secondary" data-optimize="${index}">基于此图优化</button></span></figcaption></figure>`).join("")}`;
+  if (state.status === "generating") startGenerationTimer();
 }
 async function askDirector(phase) {
   busy = true; rebuildConversation(); renderComposer();
@@ -185,7 +211,7 @@ function beginRevision(index) {
 function buildPrompt() { return state.strategy?.imagePrompt || "Preserve the original room geometry, camera, perspective, windows and doors. Create a realistic, buildable interior design visualization with natural lighting, accurate materials, no people, no text and no watermark."; }
 async function confirmAndGenerate() {
   if (busy || !state.strategy?.imagePrompt) return;
-  busy = true; state.confirmedStrategy = state.strategy; state.status = "generating"; state.generationError = ""; persist(); renderStrategy();
+  busy = true; state.confirmedStrategy = state.strategy; state.status = "generating"; state.generationStartedAt = Date.now(); state.generationError = ""; persist(); renderStrategy(); renderResults(); renderComposer(); switchMobilePanel("visual");
   try {
     const active = state.results[state.activeResultIndex]; const inputs = [state.scene];
     if (state.phase === "revision" && resultImage(active)) inputs.push({ name: `generated-version-${state.activeResultIndex + 1}.png`, type: active.type || "image/png", dataUrl: resultImage(active) });
@@ -194,7 +220,7 @@ async function confirmAndGenerate() {
     const result = await response.json(); if (!response.ok) throw new Error(result.error || "生图服务返回错误"); if (!result.images?.length) throw new Error("服务没有返回图片");
     state.results.push(...result.images); state.activeResultIndex = state.results.length - 1; state.status = "complete"; state.phase = "revision"; state.progress = 100; state.quickOptions = ["灯光再暖一点", "调整布局与家具", "优化材质和颜色", "修改摆件与细节"]; state.conversation.push({ role: "assistant", content: `版本 ${state.results.length} 已完成。请直接在下方告诉我哪些地方保留、哪些地方修改，我会把这张效果图作为主要视觉基准继续讨论并生成下一版。` }); switchMobilePanel("visual"); emit("generation-complete", { images: result.images, strategy: state.strategy });
   } catch (error) { state.status = "error"; state.generationError = error.message; emit("generation-error", { message: error.message }); }
-  finally { busy = false; persist(); rebuildConversation(); renderComposer(); renderStrategy(); renderResults(); }
+  finally { busy = false; stopGenerationTimer(); delete state.generationStartedAt; persist(); rebuildConversation(); renderComposer(); renderStrategy(); renderResults(); }
 }
 
 function showNotice(text, type = "info") { const notice = document.createElement("div"); notice.className = `notice ${type}`; notice.textContent = text; document.body.append(notice); requestAnimationFrame(() => notice.classList.add("visible")); setTimeout(() => notice.remove(), 3500); }

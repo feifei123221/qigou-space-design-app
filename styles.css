@@ -135,12 +135,19 @@ textarea::placeholder { color: #9a9b92; }
 .generation-head { display: flex; justify-content: space-between; align-items: baseline; }
 .generation-head h3 { margin: 0; font: 500 20px Georgia, serif; }
 .generation-head span { font-size: 10px; color: #777a70; }
+.generation-head span.active { display: inline-flex; align-items: center; gap: 6px; color: #557000; font-weight: 800; }
+.generation-head span.active::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 5px rgba(159,197,30,.18); animation: generation-pulse 1.2s infinite; }
 .result-grid { display: grid; gap: 10px; margin-top: 12px; }
 .result-grid figure { margin: 0; border-radius: 12px; overflow: hidden; background: var(--paper-deep); }
 .result-grid img { width: 100%; display: block; }
 .result-grid figcaption { padding: 9px 11px; font-size: 10px; }
-.generating-card, .error-card { min-height: 150px; border-radius: 12px; display: grid; place-items: center; align-content: center; text-align: center; background: var(--paper-deep); padding: 24px; color: #676a60; font-size: 12px; }
+.generating-card, .error-card { min-height: 220px; border-radius: 12px; display: grid; place-items: center; align-content: center; text-align: center; background: linear-gradient(145deg, #f4f5e9, var(--paper-deep)); border: 1px solid rgba(159,197,30,.45); padding: 28px; color: #676a60; font-size: 12px; }
 .generating-card i { display: block; width: 30px; height: 30px; border: 2px solid #c5c5bb; border-top-color: var(--accent-deep); border-radius: 50%; animation: spin .8s linear infinite; }
+.generating-card h3 { margin: 15px 0 5px; color: var(--ink); font: 600 18px Georgia, serif; }
+.generating-card p { margin: 0; color: #4d5145; font-weight: 700; }
+.generating-card strong { margin-top: 8px; color: #607614; font-size: 12px; }
+.generating-card small { max-width: 340px; margin-top: 12px; color: #777a70; line-height: 1.6; }
+@keyframes generation-pulse { 0%, 100% { opacity: .55; transform: scale(.85); } 50% { opacity: 1; transform: scale(1); } }
 .error-card .secondary { margin-top: 8px; }
 .mobile-nav { display: none; }
 .notice { position: fixed; z-index: 100; left: 50%; top: 90px; transform: translate(-50%, -15px); opacity: 0; border-radius: 11px; padding: 11px 16px; background: var(--ink); color: white; font-size: 12px; box-shadow: var(--shadow); transition: .2s ease; }
