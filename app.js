@@ -5,7 +5,7 @@ const API_BASE = ["localhost", "127.0.0.1", new URL(API_ORIGIN).hostname].includ
 const apiUrl = (path) => `${API_BASE}${path}`;
 const elements = Object.fromEntries([
   "sceneInput", "scenePreview", "referenceInput", "referenceGrid", "referenceCount", "openConversationButton",
-  "messages", "composer", "composerContext", "quickOptions", "answerInput", "sendButton", "voiceInputButton", "voiceOutputButton", "voiceStatus", "progressBar", "emptyStrategy", "strategyContent",
+  "messages", "composer", "composerContext", "quickOptions", "answerInput", "sendButton", "voiceInputButton", "voiceStatus", "progressBar", "emptyStrategy", "strategyContent",
   "strategyTemplate", "apiStatus", "installButton", "newProjectButton"
 ].map((id) => [id, document.getElementById(id)]));
 
@@ -19,7 +19,7 @@ let speechRecognition = null;
 let isListening = false;
 let voiceBaseText = "";
 let voiceTranscript = "";
-let voiceRepliesEnabled = localStorage.getItem("qigou-voice-replies") === "true";
+
 
 function loadState() {
   try { return { ...defaultState(), ...JSON.parse(localStorage.getItem(STORAGE_KEY)) }; } catch { return defaultState(); }
@@ -74,6 +74,7 @@ function addMessage(role, text, label) {
 function rebuildConversation() {
   elements.messages.innerHTML = '<article class="message designer"><div class="avatar">栖</div><div><strong>设计总监</strong><p>上传现场图和参考素材，再用自己的话描述期待。模糊没关系，我会观察图片并逐步把它变成明确方案。</p></div></article>';
   state.conversation.forEach((message) => addMessage(message.role === "assistant" ? "designer" : "user", message.content));
+  if (busy) elements.messages.insertAdjacentHTML("beforeend", '<article class="message designer thinking-message" role="status" aria-live="polite"><div class="avatar">栖</div><div><strong>设计总监正在分析</strong><p>正在理解你的需求和空间信息，请稍候 <span class="thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span></p></div></article>');
   elements.messages.scrollTop = elements.messages.scrollHeight;
 }
 function renderComposer() {
@@ -91,9 +92,6 @@ function renderComposer() {
   elements.voiceInputButton.textContent = isListening ? "■" : "🎙";
   elements.voiceInputButton.setAttribute("aria-label", isListening ? "停止语音输入" : "开始语音输入");
   elements.voiceStatus.textContent = isListening ? "正在聆听，说完后会自动发送……" : !SpeechRecognition ? "当前浏览器不支持语音识别，请使用文字输入。" : "";
-  elements.voiceOutputButton.hidden = !("speechSynthesis" in window);
-  elements.voiceOutputButton.setAttribute("aria-pressed", String(voiceRepliesEnabled));
-  elements.voiceOutputButton.textContent = voiceRepliesEnabled ? "🔊 回复朗读：开" : "🔈 回复朗读：关";
 }
 
 function speakAssistant(text) {
@@ -150,13 +148,13 @@ function renderStrategy() {
 }
 
 async function askDirector(phase) {
-  busy = true; renderComposer();
+  busy = true; rebuildConversation(); renderComposer();
   try {
     const active = state.results[state.activeResultIndex];
     const response = await fetch(apiUrl("/api/chat"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ phase, brief: state.brief, conversation: state.conversation, scene: state.scene, references: state.references, strategy: state.strategy, activeResultIndex: state.activeResultIndex, activeImage: active ? { name: `version-${state.activeResultIndex + 1}.png`, type: active.type || "image/png", dataUrl: resultImage(active) } : null }) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "设计大脑暂时不可用");
-    state.conversation.push({ role: "assistant", content: result.reply }); speakAssistant(result.reply);
+    state.conversation.push({ role: "assistant", content: result.reply });
     state.phase = result.phase; state.progress = result.progress; state.quickOptions = result.quickOptions || [];
     if (result.readyForProposal && result.strategy) { state.strategy = result.strategy; state.status = "review"; state.phase = phase === "revision" ? "revision" : result.phase; state.progress = 100; state.quickOptions = phase === "revision" ? ["继续调整灯光", "继续修改布局", "继续优化材质", "确认并生成新版"] : []; switchMobilePanel("strategy"); } else state.status = phase === "revision" ? "revision" : "interview";
     persist(); rebuildConversation(); renderComposer(); renderStrategy();
@@ -205,7 +203,7 @@ async function handleReferences(event) { const files = [...event.target.files].s
 function resetProject() { if (!confirm("新建设计会清空当前访谈和图片，确定继续吗？")) return; if (speechRecognition && isListening) speechRecognition.abort(); if ("speechSynthesis" in window) window.speechSynthesis.cancel(); elements.answerInput.value = ""; state = defaultState(); localStorage.removeItem(STORAGE_KEY); renderAll(); }
 function renderAll() { renderMedia(); rebuildConversation(); renderComposer(); renderStrategy(); }
 
-elements.sceneInput.addEventListener("change", handleScene); elements.referenceInput.addEventListener("change", handleReferences); elements.openConversationButton.addEventListener("click", () => { switchMobilePanel("conversation"); elements.answerInput.focus(); }); elements.sendButton.addEventListener("click", submitAnswer); elements.voiceInputButton.addEventListener("click", toggleVoiceInput); elements.voiceOutputButton.addEventListener("click", toggleVoiceReplies);
+elements.sceneInput.addEventListener("change", handleScene); elements.referenceInput.addEventListener("change", handleReferences); elements.openConversationButton.addEventListener("click", () => { switchMobilePanel("conversation"); elements.answerInput.focus(); }); elements.sendButton.addEventListener("click", submitAnswer); elements.voiceInputButton.addEventListener("click", toggleVoiceInput);
 elements.answerInput.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submitAnswer(); } });
 elements.quickOptions.addEventListener("click", (event) => { if (event.target.tagName !== "BUTTON") return; elements.answerInput.value = elements.answerInput.value.trim() ? `${elements.answerInput.value.trim()}，${event.target.textContent}` : event.target.textContent; elements.answerInput.focus(); });
 elements.scenePreview.addEventListener("click", (event) => { if (event.target.matches("[data-remove-scene]")) { state.scene = null; persist(); renderMedia(); } });
@@ -215,4 +213,4 @@ document.querySelectorAll("[data-mobile-tab]").forEach((button) => button.addEve
 window.addEventListener("beforeinstallprompt", (event) => { event.preventDefault(); deferredInstallPrompt = event; elements.installButton.hidden = false; }); elements.installButton.addEventListener("click", async () => { if (!deferredInstallPrompt) return; deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; deferredInstallPrompt = null; elements.installButton.hidden = true; });
 window.addEventListener("message", (event) => { const message = event.data; if (!message || typeof message !== "object") return; if (message.type === "qigou:set-context") { state.context = { ...(state.context || {}), ...(message.detail || {}) }; persist(); emit("context-updated", state.context); } if (message.type === "qigou:get-state") emit("state", { state }); if (message.type === "qigou:reset") resetProject(); });
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.warn));
-initializeSpeechRecognition(); renderAll(); checkHealth(); emit("ready", { version: "2.0.0", capabilities: ["vision-interview", "llm-reasoning", "design-strategy", "image-generation", "image-revision", "version-history", "pwa", "embed", "voice-input", "voice-output"] });
+initializeSpeechRecognition(); renderAll(); checkHealth(); emit("ready", { version: "2.0.0", capabilities: ["vision-interview", "llm-reasoning", "design-strategy", "image-generation", "image-revision", "version-history", "pwa", "embed", "voice-input"] });
