@@ -94,12 +94,6 @@ function renderComposer() {
   elements.voiceStatus.textContent = isListening ? "正在聆听，说完后会自动发送……" : !SpeechRecognition ? "当前浏览器不支持语音识别，请使用文字输入。" : "";
 }
 
-function speakAssistant(text) {
-  if (!voiceRepliesEnabled || !("speechSynthesis" in window) || !text) return;
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text); utterance.lang = "zh-CN"; utterance.rate = 0.96;
-  window.speechSynthesis.speak(utterance);
-}
 
 function initializeSpeechRecognition() {
   if (!SpeechRecognition) return;
@@ -115,11 +109,6 @@ function toggleVoiceInput() {
   if (isListening) speechRecognition.stop(); else { voiceBaseText = elements.answerInput.value.trim(); voiceTranscript = ""; speechRecognition.start(); }
 }
 
-function toggleVoiceReplies() {
-  voiceRepliesEnabled = !voiceRepliesEnabled; localStorage.setItem("qigou-voice-replies", String(voiceRepliesEnabled));
-  if (!voiceRepliesEnabled && "speechSynthesis" in window) window.speechSynthesis.cancel();
-  renderComposer();
-}
 
 function resultImage(result) { return result?.dataUrl || result?.url || ""; }
 function renderStrategy() {
@@ -200,7 +189,7 @@ function switchMobilePanel(panel) { document.body.dataset.mobilePanel = panel; d
 async function checkHealth() { elements.apiStatus.textContent = "AI 服务正在连接"; try { const response = await fetch(apiUrl("/api/health")); const health = await response.json(); const ready = health.imageApiConfigured && health.llmApiConfigured; elements.apiStatus.textContent = ready ? `智能设计与 ${health.model} 已连接` : "模型服务待配置"; elements.apiStatus.classList.toggle("ready", ready); } catch { elements.apiStatus.textContent = "AI 服务暂时未连接"; } }
 async function handleScene(event) { const [file] = event.target.files; if (!file) return; try { state.scene = await imageFromFile(file); persist(); renderMedia(); } catch (error) { showNotice(error.message, "error"); } event.target.value = ""; }
 async function handleReferences(event) { const files = [...event.target.files].slice(0, MAX_REFERENCES - state.references.length); if (!files.length) return showNotice(`最多添加 ${MAX_REFERENCES} 张参考图。`, "error"); try { state.references.push(...await Promise.all(files.map(imageFromFile))); persist(); renderMedia(); } catch (error) { showNotice(error.message, "error"); } event.target.value = ""; }
-function resetProject() { if (!confirm("新建设计会清空当前访谈和图片，确定继续吗？")) return; if (speechRecognition && isListening) speechRecognition.abort(); if ("speechSynthesis" in window) window.speechSynthesis.cancel(); elements.answerInput.value = ""; state = defaultState(); localStorage.removeItem(STORAGE_KEY); renderAll(); }
+function resetProject() { if (!confirm("新建设计会清空当前访谈和图片，确定继续吗？")) return; if (speechRecognition && isListening) speechRecognition.abort(); elements.answerInput.value = ""; state = defaultState(); localStorage.removeItem(STORAGE_KEY); renderAll(); }
 function renderAll() { renderMedia(); rebuildConversation(); renderComposer(); renderStrategy(); }
 
 elements.sceneInput.addEventListener("change", handleScene); elements.referenceInput.addEventListener("change", handleReferences); elements.openConversationButton.addEventListener("click", () => { switchMobilePanel("conversation"); elements.answerInput.focus(); }); elements.sendButton.addEventListener("click", submitAnswer); elements.voiceInputButton.addEventListener("click", toggleVoiceInput);
