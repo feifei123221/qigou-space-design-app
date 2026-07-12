@@ -17,11 +17,13 @@ let busy = false;
 let strategyLocalizationInFlight = false;
 let persistTimer = null;
 let localStorageWarningShown = false;
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-let speechRecognition = null;
 let isListening = false;
+let isTranscribing = false;
 let voiceBaseText = "";
-let voiceTranscript = "";
+let mediaRecorder = null;
+let mediaStream = null;
+let audioChunks = [];
+let recordingTimer = null;
 
 
 function loadState() {
@@ -115,26 +117,81 @@ function renderComposer() {
   elements.composerContext.classList.toggle("visible", resultConversation);
   elements.composerContext.innerHTML = resultConversation ? `<strong>正在讨论版本 ${Math.max(1, state.activeResultIndex + 1)}</strong> · ${escapeHtml(latestAssistant?.content || "直接告诉我哪些地方保留、哪些地方修改，我会基于当前效果图继续优化。")}` : "";
   elements.answerInput.placeholder = state.phase === "revision" ? "说出要修改的地方，例如：保留沙发，只把灯光调暖……" : state.status === "draft" ? "描述你的空间需求，也可以点击麦克风说话……" : "继续回答设计总监，也可以点击麦克风说话……";
-  elements.sendButton.disabled = busy || isListening;
-  elements.voiceInputButton.disabled = busy;
+  elements.sendButton.disabled = busy || isListening || isTranscribing;
+  elements.voiceInputButton.disabled = busy || isTranscribing;
   elements.voiceInputButton.classList.toggle("listening", isListening);
   elements.voiceInputButton.textContent = isListening ? "■" : "🎙";
   elements.voiceInputButton.setAttribute("aria-label", isListening ? "停止语音输入" : "开始语音输入");
-  elements.voiceStatus.textContent = isListening ? "正在聆听，说完后文字会出现在输入框……" : !SpeechRecognition ? "当前浏览器不支持语音识别，请使用文字输入。" : "";
-}
-function initializeSpeechRecognition() {
-  if (!SpeechRecognition) return;
-  speechRecognition = new SpeechRecognition(); speechRecognition.lang = "zh-CN"; speechRecognition.continuous = false; speechRecognition.interimResults = true;
-  speechRecognition.onstart = () => { isListening = true; voiceBaseText = elements.answerInput.value.trim(); voiceTranscript = ""; renderComposer(); };
-  speechRecognition.onresult = (event) => { voiceTranscript = [...event.results].map((result) => result[0].transcript).join("").trim(); elements.answerInput.value = [voiceBaseText, voiceTranscript].filter(Boolean).join("，"); renderComposer(); };
-  speechRecognition.onerror = (event) => { isListening = false; renderComposer(); if (event.error !== "no-speech" && event.error !== "aborted") showNotice(event.error === "not-allowed" ? "请允许浏览器使用麦克风后再试。" : "语音识别失败，请重试或使用文字输入。", "error"); };
-  speechRecognition.onend = () => { isListening = false; renderComposer(); };
+  elements.voiceStatus.textContent = isListening ? "正在录音，讲完后请点击停止……" : isTranscribing ? "正在把语音转换成文字，请稍候……" : !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder ? "当前浏览器不支持网页录音，请使用手机键盘语音输入。" : "";
 }
 
-function toggleVoiceInput() {
-  if (!speechRecognition) { elements.answerInput.focus(); elements.voiceStatus.textContent = `此浏览器不支持网页语音识别，请使用手机键盘自带的语音输入后发送。`; return; }
-  if (!speechRecognition) return showNotice("当前浏览器不支持语音识别，请使用文字输入。", "error");
-  if (isListening) speechRecognition.stop(); else { voiceBaseText = elements.answerInput.value.trim(); voiceTranscript = ""; try { speechRecognition.start(); } catch (error) { isListening = false; renderComposer(); showNotice("语音输入启动失败，请重试或使用文字输入。", "error"); } }
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("录音读取失败，请重试。"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function releaseMicrophone() {
+  clearTimeout(recordingTimer);
+  recordingTimer = null;
+  mediaStream?.getTracks().forEach((track) => track.stop());
+  mediaStream = null;
+}
+
+async function transcribeRecording(blob) {
+  if (!blob.size) throw new Error("没有录到声音，请重试。");
+  const response = await fetch(apiUrl("/api/transcribe"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ audio: await blobToDataUrl(blob) })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || "语音转文字失败，请重试。");
+  if (!String(result.text || "").trim()) throw new Error("没有识别到清晰语音，请重试。");
+  elements.answerInput.value = [voiceBaseText, String(result.text).trim()].filter(Boolean).join("，");
+  elements.answerInput.focus();
+}
+
+async function stopVoiceInput() {
+  if (!mediaRecorder || mediaRecorder.state === "inactive") return;
+  mediaRecorder.stop();
+}
+
+async function startVoiceInput() {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error("当前浏览器不支持网页录音，请使用手机键盘语音输入。");
+  mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  const preferredType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((type) => MediaRecorder.isTypeSupported?.(type));
+  mediaRecorder = preferredType ? new MediaRecorder(mediaStream, { mimeType: preferredType }) : new MediaRecorder(mediaStream);
+  audioChunks = [];
+  voiceBaseText = elements.answerInput.value.trim();
+  mediaRecorder.ondataavailable = (event) => { if (event.data.size) audioChunks.push(event.data); };
+  mediaRecorder.onerror = () => { isListening = false; isTranscribing = false; releaseMicrophone(); renderComposer(); showNotice("录音失败，请检查麦克风权限后重试。", "error"); };
+  mediaRecorder.onstop = async () => {
+    if (recordingTimer) clearTimeout(recordingTimer);
+    recordingTimer = null;
+    const recordedType = String(mediaRecorder.mimeType || audioChunks[0]?.type || "audio/webm").split(";")[0];
+    const blob = new Blob(audioChunks, { type: recordedType });
+    isListening = false;
+    isTranscribing = true;
+    releaseMicrophone();
+    renderComposer();
+    try { await transcribeRecording(blob); }
+    catch (error) { showNotice(error.message, "error"); }
+    finally { isTranscribing = false; mediaRecorder = null; audioChunks = []; renderComposer(); }
+  };
+  mediaRecorder.start(500);
+  isListening = true;
+  renderComposer();
+  recordingTimer = setTimeout(() => { if (isListening) void stopVoiceInput(); }, 60000);
+}
+
+async function toggleVoiceInput() {
+  if (isListening) return stopVoiceInput();
+  try { await startVoiceInput(); }
+  catch (error) { isListening = false; isTranscribing = false; releaseMicrophone(); renderComposer(); showNotice(error.name === "NotAllowedError" ? "请允许浏览器使用麦克风后再试。" : error.message || "录音启动失败，请重试。", "error"); }
 }
 
 
@@ -227,7 +284,7 @@ function switchMobilePanel(panel) { document.body.dataset.mobilePanel = panel; d
 async function checkHealth() { elements.apiStatus.textContent = "AI 服务正在连接"; try { const response = await fetch(apiUrl("/api/health")); const health = await response.json(); const ready = health.imageApiConfigured && health.llmApiConfigured; elements.apiStatus.textContent = ready ? `智能设计与 ${health.model} 已连接` : "模型服务待配置"; elements.apiStatus.classList.toggle("ready", ready); } catch { elements.apiStatus.textContent = "AI 服务暂时未连接"; } }
 async function handleScene(event) { const [file] = event.target.files; if (!file) return; try { state.scene = await imageFromFile(file); persist(); renderMedia(); } catch (error) { showNotice(error.message, "error"); } event.target.value = ""; }
 async function handleReferences(event) { const files = [...event.target.files].slice(0, MAX_REFERENCES - state.references.length); if (!files.length) return showNotice(`最多添加 ${MAX_REFERENCES} 张参考图。`, "error"); try { state.references.push(...await Promise.all(files.map(imageFromFile))); persist(); renderMedia(); } catch (error) { showNotice(error.message, "error"); } event.target.value = ""; }
-function resetProject() { if (!confirm("新建设计会清空当前访谈和图片，确定继续吗？")) return; if (speechRecognition && isListening) speechRecognition.abort(); elements.answerInput.value = ""; localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(PROJECT_ID_KEY); state = defaultState(); persist(); renderAll(); }
+function resetProject() { if (!confirm("新建设计会清空当前访谈和图片，确定继续吗？")) return; if (isListening) void stopVoiceInput(); releaseMicrophone(); elements.answerInput.value = ""; localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(PROJECT_ID_KEY); state = defaultState(); persist(); renderAll(); }
 function renderAll() { renderMedia(); rebuildConversation(); renderComposer(); renderStrategy(); renderResults(); }
 
 elements.sceneInput.addEventListener("change", handleScene); elements.referenceInput.addEventListener("change", handleReferences); elements.openConversationButton.addEventListener("click", () => { switchMobilePanel("conversation"); elements.answerInput.focus(); }); elements.sendButton.addEventListener("click", submitAnswer); elements.voiceInputButton.addEventListener("click", toggleVoiceInput);
@@ -243,4 +300,4 @@ document.querySelectorAll("[data-mobile-tab]").forEach((button) => button.addEve
 window.addEventListener("beforeinstallprompt", (event) => { event.preventDefault(); deferredInstallPrompt = event; elements.installButton.hidden = false; }); elements.installButton.addEventListener("click", async () => { if (!deferredInstallPrompt) return; deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; deferredInstallPrompt = null; elements.installButton.hidden = true; });
 window.addEventListener("message", (event) => { const message = event.data; if (!message || typeof message !== "object") return; if (message.type === "qigou:set-context") { state.context = { ...(state.context || {}), ...(message.detail || {}) }; persist(); emit("context-updated", state.context); } if (message.type === "qigou:get-state") emit("state", { state }); if (message.type === "qigou:reset") resetProject(); });
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.warn));
-initializeSpeechRecognition(); renderAll(); void restoreServerProject(); checkHealth(); emit("ready", { version: "2.0.0", capabilities: ["vision-interview", "llm-reasoning", "design-strategy", "image-generation", "image-revision", "version-history", "pwa", "embed", "voice-input"] });
+renderAll(); void restoreServerProject(); checkHealth(); emit("ready", { version: "2.1.0", capabilities: ["vision-interview", "llm-reasoning", "design-strategy", "image-generation", "image-revision", "version-history", "pwa", "embed", "voice-recording", "speech-transcription"] });
