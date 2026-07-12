@@ -120,22 +120,21 @@ function renderComposer() {
   elements.voiceInputButton.classList.toggle("listening", isListening);
   elements.voiceInputButton.textContent = isListening ? "■" : "🎙";
   elements.voiceInputButton.setAttribute("aria-label", isListening ? "停止语音输入" : "开始语音输入");
-  elements.voiceStatus.textContent = isListening ? "正在聆听，说完后会自动发送……" : !SpeechRecognition ? "当前浏览器不支持语音识别，请使用文字输入。" : "";
+  elements.voiceStatus.textContent = isListening ? "正在聆听，说完后文字会出现在输入框……" : !SpeechRecognition ? "当前浏览器不支持语音识别，请使用文字输入。" : "";
 }
 function initializeSpeechRecognition() {
   if (!SpeechRecognition) return;
   speechRecognition = new SpeechRecognition(); speechRecognition.lang = "zh-CN"; speechRecognition.continuous = false; speechRecognition.interimResults = true;
   speechRecognition.onstart = () => { isListening = true; voiceBaseText = elements.answerInput.value.trim(); voiceTranscript = ""; renderComposer(); };
-  speechRecognition.onresult = (event) => { voiceTranscript = [...event.results].map((result) => result[0].transcript).join("").trim(); elements.answerInput.value = [voiceBaseText, voiceTranscript].filter(Boolean).join("，"); };
-  speechRecognition.onerror = (event) => { if (event.error !== "no-speech" && event.error !== "aborted") showNotice(event.error === "not-allowed" ? "请允许浏览器使用麦克风后再试。" : "语音识别失败，请重试或使用文字输入。", "error"); };
+  speechRecognition.onresult = (event) => { voiceTranscript = [...event.results].map((result) => result[0].transcript).join("").trim(); elements.answerInput.value = [voiceBaseText, voiceTranscript].filter(Boolean).join("，"); renderComposer(); };
+  speechRecognition.onerror = (event) => { isListening = false; renderComposer(); if (event.error !== "no-speech" && event.error !== "aborted") showNotice(event.error === "not-allowed" ? "请允许浏览器使用麦克风后再试。" : "语音识别失败，请重试或使用文字输入。", "error"); };
   speechRecognition.onend = () => { isListening = false; renderComposer(); };
-  speechRecognition.continuous = true;
 }
 
 function toggleVoiceInput() {
   if (!speechRecognition) { elements.answerInput.focus(); elements.voiceStatus.textContent = `此浏览器不支持网页语音识别，请使用手机键盘自带的语音输入后发送。`; return; }
   if (!speechRecognition) return showNotice("当前浏览器不支持语音识别，请使用文字输入。", "error");
-  if (isListening) speechRecognition.stop(); else { voiceBaseText = elements.answerInput.value.trim(); voiceTranscript = ""; speechRecognition.start(); }
+  if (isListening) speechRecognition.stop(); else { voiceBaseText = elements.answerInput.value.trim(); voiceTranscript = ""; try { speechRecognition.start(); } catch (error) { isListening = false; renderComposer(); showNotice("语音输入启动失败，请重试或使用文字输入。", "error"); } }
 }
 
 
