@@ -1,4 +1,5 @@
-const STORAGE_KEY = "qigou-project-v2";
+const STORAGE_KEY = "qigou-project-v3";
+const PROJECT_ID_KEY = "qigou-project-id";
 const MAX_REFERENCES = 3;
 const API_ORIGIN = "https://spatial-design-studio.onrender.com";
 const API_BASE = ["localhost", "127.0.0.1", new URL(API_ORIGIN).hostname].includes(window.location.hostname) ? "" : API_ORIGIN;
@@ -6,14 +7,15 @@ const apiUrl = (path) => `${API_BASE}${path}`;
 const elements = Object.fromEntries([
   "sceneInput", "scenePreview", "referenceInput", "referenceGrid", "referenceCount", "openConversationButton",
   "messages", "composer", "composerContext", "quickOptions", "answerInput", "sendButton", "voiceInputButton", "voiceStatus", "progressBar", "emptyStrategy", "strategyContent",
-  "strategyTemplate", "apiStatus", "installButton", "newProjectButton"
+  "strategyTemplate", "apiStatus", "installButton", "newProjectButton", "exportProjectButton", "downloadImageButton", "generationState", "resultGrid"
 ].map((id) => [id, document.getElementById(id)]));
 
-const defaultState = () => ({ scene: null, references: [], brief: "", conversation: [], status: "draft", phase: "discovery", progress: 0, quickOptions: [], strategy: null, confirmedStrategy: null, results: [], activeResultIndex: -1, generationError: "" });
+const defaultState = () => ({ id: localStorage.getItem(PROJECT_ID_KEY) || crypto.randomUUID(), scene: null, references: [], brief: "", conversation: [], status: "draft", phase: "discovery", progress: 0, quickOptions: [], strategy: null, confirmedStrategy: null, results: [], activeResultIndex: -1, generationError: "" });
 let state = loadState();
 let deferredInstallPrompt = null;
 let busy = false;
 let strategyLocalizationInFlight = false;
+let persistTimer = null;
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let speechRecognition = null;
 let isListening = false;
@@ -24,7 +26,25 @@ let voiceTranscript = "";
 function loadState() {
   try { return { ...defaultState(), ...JSON.parse(localStorage.getItem(STORAGE_KEY)) }; } catch { return defaultState(); }
 }
-function persist() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (error) { console.warn("项目图片较大，无法完整保存", error); } }
+function persist() {
+  localStorage.setItem(PROJECT_ID_KEY, state.id);
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (error) { console.warn("本机空间不足，项目将继续保存到服务端", error); }
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(async () => {
+    try {
+      const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(state.id)}`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(state) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (error) { console.warn("项目云端保存暂时失败", error.message); }
+  }, 700);
+}
+async function restoreServerProject() {
+  try {
+    const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(state.id)}`));
+    if (!response.ok) return;
+    const result = await response.json();
+    if (result.project?.savedAt && (!state.savedAt || result.project.savedAt > state.savedAt)) { state = { ...defaultState(), ...result.project }; renderAll(); }
+  } catch (error) { console.warn("项目云端恢复暂时不可用", error.message); }
+}
 function escapeHtml(value = "") { return String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]); }
 function emit(name, detail = {}) { const payload = { type: `qigou:${name}`, detail, timestamp: new Date().toISOString() }; if (window.parent !== window) window.parent.postMessage(payload, "*"); window.dispatchEvent(new CustomEvent(payload.type, { detail })); }
 
@@ -123,19 +143,29 @@ function renderStrategy() {
   const set = (field, value) => { root.querySelector(`[data-field="${field}"]`).textContent = value || "待确认"; };
   ["positioning", "style", "lighting", "materials", "layout", "constraints", "known", "inferred", "unknown"].forEach((field) => set(field, state.strategy[field]));
   root.querySelector('[data-field="goals"]').innerHTML = (state.strategy.goals || []).map((goal) => `<li>${escapeHtml(goal)}</li>`).join("");
-  const status = root.querySelector(".strategy-status b"); status.textContent = state.status === "complete" ? "可继续优化" : state.phase === "revision" ? "修改方案" : "待确认";
-  const generation = root.querySelector("#generation"); const grid = root.querySelector("#resultGrid");
-  if (["generating", "complete", "error"].includes(state.status) || state.results.length) {
-    generation.hidden = false;
-    root.querySelector("#generationState").textContent = state.status === "generating" ? "生成中，请耐心等待" : state.status === "error" ? state.generationError : `共 ${state.results.length} 个版本`;
-    grid.innerHTML = state.results.map((result, index) => `<figure class="result-card ${index === state.activeResultIndex ? "active" : ""}"><img src="${resultImage(result)}" alt="设计效果图版本 ${index + 1}"><figcaption><span>版本 ${index + 1}</span><button class="secondary" data-optimize="${index}">基于此图继续优化</button></figcaption></figure>`).join("");
-  }
+  root.querySelector(".strategy-status b").textContent = state.status === "complete" ? "可继续优化" : state.phase === "revision" ? "修改方案" : "待确认";
   root.querySelector("#reviseButton").addEventListener("click", () => beginRevision(state.activeResultIndex));
   root.querySelector("#confirmButton").addEventListener("click", confirmAndGenerate);
-  grid.addEventListener("click", (event) => { const index = event.target.dataset.optimize; if (index !== undefined) beginRevision(Number(index)); });
   elements.strategyContent.replaceChildren(fragment);
 }
 
+function renderResults() {
+  elements.generationState.textContent = state.status === "generating" ? "生成中，请耐心等待" : state.status === "error" ? state.generationError : state.results.length ? `版本 ${state.activeResultIndex + 1} / ${state.results.length}` : "等待生成";
+  elements.downloadImageButton.hidden = !state.results.length;
+  if (state.status === "generating" && !state.results.length) {
+    elements.resultGrid.innerHTML = '<div class="generating-card"><i></i><p>正在生成设计效果图</p></div>';
+    return;
+  }
+  if (state.status === "error" && !state.results.length) {
+    elements.resultGrid.innerHTML = `<div class="error-card"><p>${escapeHtml(state.generationError)}</p></div>`;
+    return;
+  }
+  if (!state.results.length) {
+    elements.resultGrid.innerHTML = '<div class="visual-empty"><div class="line-art">⌂</div><h3>效果图将在这里呈现</h3><p>完成需求讨论并确认方案后，无需离开对话区即可查看结果。</p></div>';
+    return;
+  }
+  elements.resultGrid.innerHTML = state.results.map((result, index) => `<figure class="result-card ${index === state.activeResultIndex ? "active" : ""}"><img src="${resultImage(result)}" alt="设计效果图版本 ${index + 1}"><figcaption><span>版本 ${index + 1}</span><span><button class="secondary" data-version="${index}">查看</button> <button class="secondary" data-optimize="${index}">基于此图优化</button></span></figcaption></figure>`).join("");
+}
 async function askDirector(phase) {
   busy = true; rebuildConversation(); renderComposer();
   try {
@@ -145,8 +175,8 @@ async function askDirector(phase) {
     if (!response.ok) throw new Error(result.error || "设计大脑暂时不可用");
     state.conversation.push({ role: "assistant", content: result.reply });
     state.phase = result.phase; state.progress = result.progress; state.quickOptions = result.quickOptions || [];
-    if (result.readyForProposal && result.strategy) { state.strategy = result.strategy; state.status = "review"; state.phase = phase === "revision" ? "revision" : result.phase; state.progress = 100; state.quickOptions = phase === "revision" ? ["继续调整灯光", "继续修改布局", "继续优化材质", "确认并生成新版"] : []; switchMobilePanel("strategy"); } else state.status = phase === "revision" ? "revision" : "interview";
-    persist(); rebuildConversation(); renderComposer(); renderStrategy();
+    if (result.readyForProposal && result.strategy) { state.strategy = result.strategy; state.status = "review"; state.phase = phase === "revision" ? "revision" : result.phase; state.progress = 100; state.quickOptions = phase === "revision" ? ["继续调整灯光", "继续修改布局", "继续优化材质", "确认并生成新版"] : []; switchMobilePanel("visual"); } else state.status = phase === "revision" ? "revision" : "interview";
+    persist(); rebuildConversation(); renderComposer(); renderStrategy(); renderResults();
   } catch (error) { showNotice(error.message, "error"); state.status = phase === "revision" ? "revision" : "interview"; }
   finally { busy = false; renderComposer(); }
 }
@@ -162,11 +192,11 @@ async function submitAnswer() {
     state.conversation.push({ role: "user", content: answer });
   }
   const isResultRevision = state.phase === "revision" && state.results.length > 0;
-  persist(); rebuildConversation(); switchMobilePanel(isResultRevision ? "strategy" : "conversation"); await askDirector(isResultRevision ? "revision" : "discovery");
+  persist(); rebuildConversation(); switchMobilePanel(isResultRevision ? "visual" : "conversation"); await askDirector(isResultRevision ? "revision" : "discovery");
 }
 function beginRevision(index) {
   if (!state.results.length) { state.status = "interview"; state.phase = "discovery"; } else { state.activeResultIndex = index >= 0 ? index : state.results.length - 1; state.status = "revision"; state.phase = "revision"; state.progress = 70; state.quickOptions = ["灯光与氛围", "布局与家具", "材质与颜色", "摆件与细节"]; state.conversation.push({ role: "assistant", content: `现在基于版本 ${state.activeResultIndex + 1} 继续优化。请告诉我哪里需要改变、哪些必须保持不动。我会先理解改动边界，再生成新版本。` }); }
-  persist(); rebuildConversation(); renderComposer(); renderStrategy(); switchMobilePanel(state.results.length ? "strategy" : "conversation"); elements.answerInput.focus();
+  persist(); rebuildConversation(); renderComposer(); renderStrategy(); renderResults(); switchMobilePanel(state.results.length ? "visual" : "conversation"); elements.answerInput.focus();
 }
 
 function buildPrompt() { return state.strategy?.imagePrompt || "Preserve the original room geometry, camera, perspective, windows and doors. Create a realistic, buildable interior design visualization with natural lighting, accurate materials, no people, no text and no watermark."; }
@@ -179,9 +209,9 @@ async function confirmAndGenerate() {
     inputs.push(...state.references);
     const response = await fetch(apiUrl("/api/generate"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt: buildPrompt(), images: inputs.filter(Boolean).slice(0, 4), size: "1536x1024" }) });
     const result = await response.json(); if (!response.ok) throw new Error(result.error || "生图服务返回错误"); if (!result.images?.length) throw new Error("服务没有返回图片");
-    state.results.push(...result.images); state.activeResultIndex = state.results.length - 1; state.status = "complete"; state.phase = "revision"; state.progress = 100; state.quickOptions = ["灯光再暖一点", "调整布局与家具", "优化材质和颜色", "修改摆件与细节"]; state.conversation.push({ role: "assistant", content: `版本 ${state.results.length} 已完成。请直接在下方告诉我哪些地方保留、哪些地方修改，我会把这张效果图作为主要视觉基准继续讨论并生成下一版。` }); switchMobilePanel("strategy"); emit("generation-complete", { images: result.images, strategy: state.strategy });
+    state.results.push(...result.images); state.activeResultIndex = state.results.length - 1; state.status = "complete"; state.phase = "revision"; state.progress = 100; state.quickOptions = ["灯光再暖一点", "调整布局与家具", "优化材质和颜色", "修改摆件与细节"]; state.conversation.push({ role: "assistant", content: `版本 ${state.results.length} 已完成。请直接在下方告诉我哪些地方保留、哪些地方修改，我会把这张效果图作为主要视觉基准继续讨论并生成下一版。` }); switchMobilePanel("visual"); emit("generation-complete", { images: result.images, strategy: state.strategy });
   } catch (error) { state.status = "error"; state.generationError = error.message; emit("generation-error", { message: error.message }); }
-  finally { busy = false; persist(); rebuildConversation(); renderComposer(); renderStrategy(); }
+  finally { busy = false; persist(); rebuildConversation(); renderComposer(); renderStrategy(); renderResults(); }
 }
 
 function showNotice(text, type = "info") { const notice = document.createElement("div"); notice.className = `notice ${type}`; notice.textContent = text; document.body.append(notice); requestAnimationFrame(() => notice.classList.add("visible")); setTimeout(() => notice.remove(), 3500); }
@@ -189,8 +219,8 @@ function switchMobilePanel(panel) { document.body.dataset.mobilePanel = panel; d
 async function checkHealth() { elements.apiStatus.textContent = "AI 服务正在连接"; try { const response = await fetch(apiUrl("/api/health")); const health = await response.json(); const ready = health.imageApiConfigured && health.llmApiConfigured; elements.apiStatus.textContent = ready ? `智能设计与 ${health.model} 已连接` : "模型服务待配置"; elements.apiStatus.classList.toggle("ready", ready); } catch { elements.apiStatus.textContent = "AI 服务暂时未连接"; } }
 async function handleScene(event) { const [file] = event.target.files; if (!file) return; try { state.scene = await imageFromFile(file); persist(); renderMedia(); } catch (error) { showNotice(error.message, "error"); } event.target.value = ""; }
 async function handleReferences(event) { const files = [...event.target.files].slice(0, MAX_REFERENCES - state.references.length); if (!files.length) return showNotice(`最多添加 ${MAX_REFERENCES} 张参考图。`, "error"); try { state.references.push(...await Promise.all(files.map(imageFromFile))); persist(); renderMedia(); } catch (error) { showNotice(error.message, "error"); } event.target.value = ""; }
-function resetProject() { if (!confirm("新建设计会清空当前访谈和图片，确定继续吗？")) return; if (speechRecognition && isListening) speechRecognition.abort(); elements.answerInput.value = ""; state = defaultState(); localStorage.removeItem(STORAGE_KEY); renderAll(); }
-function renderAll() { renderMedia(); rebuildConversation(); renderComposer(); renderStrategy(); }
+function resetProject() { if (!confirm("新建设计会清空当前访谈和图片，确定继续吗？")) return; if (speechRecognition && isListening) speechRecognition.abort(); elements.answerInput.value = ""; localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(PROJECT_ID_KEY); state = defaultState(); persist(); renderAll(); }
+function renderAll() { renderMedia(); rebuildConversation(); renderComposer(); renderStrategy(); renderResults(); }
 
 elements.sceneInput.addEventListener("change", handleScene); elements.referenceInput.addEventListener("change", handleReferences); elements.openConversationButton.addEventListener("click", () => { switchMobilePanel("conversation"); elements.answerInput.focus(); }); elements.sendButton.addEventListener("click", submitAnswer); elements.voiceInputButton.addEventListener("click", toggleVoiceInput);
 elements.answerInput.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submitAnswer(); } });
@@ -198,8 +228,11 @@ elements.quickOptions.addEventListener("click", (event) => { if (event.target.ta
 elements.scenePreview.addEventListener("click", (event) => { if (event.target.matches("[data-remove-scene]")) { state.scene = null; persist(); renderMedia(); } });
 elements.referenceGrid.addEventListener("click", (event) => { if (event.target.dataset.removeReference !== undefined) { state.references.splice(Number(event.target.dataset.removeReference), 1); persist(); renderMedia(); } });
 elements.newProjectButton.addEventListener("click", resetProject);
+elements.exportProjectButton.addEventListener("click", () => window.print());
+elements.downloadImageButton.addEventListener("click", () => { const active = state.results[state.activeResultIndex]; if (!active) return; const link = document.createElement("a"); link.href = resultImage(active); link.download = `栖构空间设计-版本${state.activeResultIndex + 1}.png`; link.click(); });
+elements.resultGrid.addEventListener("click", (event) => { const version = event.target.dataset.version; const optimize = event.target.dataset.optimize; if (version !== undefined) { state.activeResultIndex = Number(version); persist(); renderResults(); } if (optimize !== undefined) beginRevision(Number(optimize)); });
 document.querySelectorAll("[data-mobile-tab]").forEach((button) => button.addEventListener("click", () => switchMobilePanel(button.dataset.mobileTab)));
 window.addEventListener("beforeinstallprompt", (event) => { event.preventDefault(); deferredInstallPrompt = event; elements.installButton.hidden = false; }); elements.installButton.addEventListener("click", async () => { if (!deferredInstallPrompt) return; deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; deferredInstallPrompt = null; elements.installButton.hidden = true; });
 window.addEventListener("message", (event) => { const message = event.data; if (!message || typeof message !== "object") return; if (message.type === "qigou:set-context") { state.context = { ...(state.context || {}), ...(message.detail || {}) }; persist(); emit("context-updated", state.context); } if (message.type === "qigou:get-state") emit("state", { state }); if (message.type === "qigou:reset") resetProject(); });
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.warn));
-initializeSpeechRecognition(); renderAll(); checkHealth(); emit("ready", { version: "2.0.0", capabilities: ["vision-interview", "llm-reasoning", "design-strategy", "image-generation", "image-revision", "version-history", "pwa", "embed", "voice-input"] });
+initializeSpeechRecognition(); renderAll(); void restoreServerProject(); checkHealth(); emit("ready", { version: "2.0.0", capabilities: ["vision-interview", "llm-reasoning", "design-strategy", "image-generation", "image-revision", "version-history", "pwa", "embed", "voice-input"] });
