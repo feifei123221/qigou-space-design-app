@@ -16,6 +16,7 @@ let deferredInstallPrompt = null;
 let busy = false;
 let strategyLocalizationInFlight = false;
 let persistTimer = null;
+let localStorageWarningShown = false;
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let speechRecognition = null;
 let isListening = false;
@@ -27,8 +28,16 @@ function loadState() {
   try { return { ...defaultState(), ...JSON.parse(localStorage.getItem(STORAGE_KEY)) }; } catch { return defaultState(); }
 }
 function persist() {
-  localStorage.setItem(PROJECT_ID_KEY, state.id);
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (error) { console.warn("本机空间不足，项目将继续保存到服务端", error); }
+  try {
+    localStorage.setItem(PROJECT_ID_KEY, state.id);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (error) {
+    console.warn("本机存储空间不足，项目将继续保存到服务端", error);
+    if (!localStorageWarningShown) {
+      localStorageWarningShown = true;
+      showNotice("本机存储空间不足，项目将继续尝试保存到云端。建议及时下载效果图。", "error");
+    }
+  }
   clearTimeout(persistTimer);
   persistTimer = setTimeout(async () => {
     try {
