@@ -47,7 +47,7 @@ async function restoreServerProject() {
     const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(state.id)}`));
     if (!response.ok) return;
     const result = await response.json();
-    if (result.project?.savedAt && (!state.savedAt || result.project.savedAt > state.savedAt)) { state = { ...defaultState(), ...result.project }; renderAll(); }
+    if (result.project?.savedAt && (!state.savedAt || result.project.savedAt > state.savedAt)) { state = { ...defaultState(), ...result.project }; renderAll(); switchMobilePanel(preferredMobilePanel()); }
   } catch (error) { console.warn("项目云端恢复暂时不可用", error.message); }
 }
 function escapeHtml(value = "") { return String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]); }
@@ -93,7 +93,10 @@ function renderMedia() {
 
 function addMessage(role, text, label) {
   const article = document.createElement("article"); article.className = `message ${role}`;
-  article.innerHTML = role === "designer" ? `<div class="avatar">栖</div><div><strong>${escapeHtml(label || "设计总监")}</strong><p>${escapeHtml(text)}</p></div>` : `<div><strong>你</strong><p>${escapeHtml(text)}</p></div>`;
+  const isLongReply = role === "designer" && String(text).length > 150;
+  const contentClass = isLongReply ? "message-content collapsible" : "message-content";
+  const toggle = isLongReply ? '<button type="button" class="message-toggle" aria-expanded="false">展开完整回复</button>' : "";
+  article.innerHTML = role === "designer" ? `<div class="avatar">栖</div><div class="${contentClass}"><strong>${escapeHtml(label || "设计总监")}</strong><p>${escapeHtml(text)}</p>${toggle}</div>` : `<div class="message-content"><strong>你</strong><p>${escapeHtml(text)}</p></div>`;
   elements.messages.append(article);
 }
 function rebuildConversation() {
@@ -224,6 +227,10 @@ async function confirmAndGenerate() {
 }
 
 function showNotice(text, type = "info") { const notice = document.createElement("div"); notice.className = `notice ${type}`; notice.textContent = text; document.body.append(notice); requestAnimationFrame(() => notice.classList.add("visible")); setTimeout(() => notice.remove(), 3500); }
+function preferredMobilePanel() {
+  if (state.results.length || ["review", "generating", "complete", "error"].includes(state.status)) return "visual";
+  return state.scene ? "conversation" : "media";
+}
 function switchMobilePanel(panel) { document.body.dataset.mobilePanel = panel; document.querySelectorAll("[data-mobile-tab]").forEach((button) => button.classList.toggle("active", button.dataset.mobileTab === panel)); }
 async function checkHealth() { elements.apiStatus.textContent = "AI 服务正在连接"; try { const response = await fetch(apiUrl("/api/health")); const health = await response.json(); const ready = health.imageApiConfigured && health.llmApiConfigured; elements.apiStatus.textContent = ready ? `智能设计与 ${health.model} 已连接` : "模型服务待配置"; elements.apiStatus.classList.toggle("ready", ready); } catch { elements.apiStatus.textContent = "AI 服务暂时未连接"; } }
 async function handleScene(event) { const [file] = event.target.files; if (!file) return; try { state.scene = await imageFromFile(file); persist(); renderMedia(); } catch (error) { showNotice(error.message, "error"); } event.target.value = ""; }
@@ -234,6 +241,7 @@ function renderAll() { renderMedia(); rebuildConversation(); renderComposer(); r
 elements.sceneInput.addEventListener("change", handleScene); elements.referenceInput.addEventListener("change", handleReferences); elements.openConversationButton.addEventListener("click", () => { switchMobilePanel("conversation"); elements.answerInput.focus(); }); elements.sendButton.addEventListener("click", submitAnswer);
 elements.answerInput.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submitAnswer(); } });
 elements.quickOptions.addEventListener("click", (event) => { if (event.target.tagName !== "BUTTON") return; elements.answerInput.value = elements.answerInput.value.trim() ? `${elements.answerInput.value.trim()}，${event.target.textContent}` : event.target.textContent; elements.answerInput.focus(); });
+elements.messages.addEventListener("click", (event) => { const toggle = event.target.closest(".message-toggle"); if (!toggle) return; const content = toggle.closest(".message-content"); const expanded = content.classList.toggle("expanded"); toggle.setAttribute("aria-expanded", String(expanded)); toggle.textContent = expanded ? "收起回复" : "展开完整回复"; });
 elements.scenePreview.addEventListener("click", (event) => { if (event.target.matches("[data-remove-scene]")) { state.scene = null; persist(); renderMedia(); } });
 elements.referenceGrid.addEventListener("click", (event) => { if (event.target.dataset.removeReference !== undefined) { state.references.splice(Number(event.target.dataset.removeReference), 1); persist(); renderMedia(); } });
 elements.newProjectButton.addEventListener("click", resetProject);
@@ -244,4 +252,4 @@ document.querySelectorAll("[data-mobile-tab]").forEach((button) => button.addEve
 window.addEventListener("beforeinstallprompt", (event) => { event.preventDefault(); deferredInstallPrompt = event; elements.installButton.hidden = false; }); elements.installButton.addEventListener("click", async () => { if (!deferredInstallPrompt) return; deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; deferredInstallPrompt = null; elements.installButton.hidden = true; });
 window.addEventListener("message", (event) => { const message = event.data; if (!message || typeof message !== "object") return; if (message.type === "qigou:set-context") { state.context = { ...(state.context || {}), ...(message.detail || {}) }; persist(); emit("context-updated", state.context); } if (message.type === "qigou:get-state") emit("state", { state }); if (message.type === "qigou:reset") resetProject(); });
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.warn));
-renderAll(); void restoreServerProject(); checkHealth(); emit("ready", { version: "2.2.0", capabilities: ["vision-interview", "llm-reasoning", "design-strategy", "image-generation", "image-revision", "version-history", "pwa", "embed"] });
+renderAll(); switchMobilePanel(preferredMobilePanel()); if (window.matchMedia("(max-width: 760px)").matches) document.querySelector(".strategy-drawer")?.removeAttribute("open"); void restoreServerProject(); checkHealth(); emit("ready", { version: "2.3.0", capabilities: ["vision-interview", "llm-reasoning", "design-strategy", "image-generation", "image-revision", "version-history", "pwa", "embed"] });
