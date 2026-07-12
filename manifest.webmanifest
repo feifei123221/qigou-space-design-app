@@ -1,0 +1,10 @@
+{
+  "name": "栖构 · AI 空间设计总监",
+  "short_name": "栖构",
+  "description": "深度理解需求后再生成空间设计方案",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f0eee8",
+  "theme_color": "#171815",
+  "icons": [{"src":"./icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]
+}
